@@ -5,6 +5,7 @@ Rewriting descriptions changes whether the model uses a tool and which arguments
 """
 
 import json
+import random
 from functools import cache
 from pathlib import Path
 
@@ -77,3 +78,26 @@ def get_lecture_summary(lecture: int) -> str:
         available = sorted(p.stem for p in (DATA_DIR / "lectures").glob("*.md"))
         return f"Key points for Lecture {lecture:02d} are not available yet. Available sessions: {', '.join(available)}"
     return path.read_text(encoding="utf-8")
+
+
+def make_quiz(lecture: int) -> str:
+    """Create one review question and its reference answer from the glossary for a given lecture session (an integer starting at 1).
+
+    Use when asked for a review question or quiz from a specific session, such as "Give me one review question from Lecture 02".
+    """
+    candidates = [e for e in load_glossary() if e.get("lecture") == lecture]
+    if not candidates:
+        available = sorted({e["lecture"] for e in load_glossary() if "lecture" in e})
+        return (
+            f"No glossary terms were found for Lecture {lecture:02d}. "
+            f"Available sessions: {', '.join(f'{n:02d}' for n in available)}"
+        )
+    chosen = random.choice(candidates)
+    return json.dumps(
+        {
+            "question": f"What does {chosen['term']} mean?",
+            "answer": chosen["definition"],
+        },
+        ensure_ascii=False,
+    )
+
