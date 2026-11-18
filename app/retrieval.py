@@ -185,6 +185,106 @@ def search_graph(query: str) -> dict:
             "max_hops": GRAPH_HOPS}
 
 
+def _typed_adjacency(graph: dict, pages: dict[str, dict]) -> dict[str, list[tuple[str, str]]]:
+    """Return {node: [(neighbor, relation), ...]} for the page and term nodes used in retrieval.
+
+    Unlike search_graph, the relation type is kept so that term-to-term edges can be treated differently.
+    """
+    usable = {n["id"] for n in graph["nodes"] if n["kind"] == "term" or n["id"] in pages}
+    adjacency = defaultdict(list)
+    for edge in graph["edges"]:
+        a, b, relation = edge["source"], edge["target"], edge["relation"]
+        if relation in ("next_page", "mentions", "related_term") and a in usable and b in usable:
+            adjacency[a].append((b, relation))
+            adjacency[b].append((a, relation))
+    return adjacency
+
+
+def _reachable_pages(root: str, adjacency: dict, pages: dict[str, dict], bridge_related_terms: bool) -> dict[str, tuple[int, list[str]]]:
+    """Return {page_id: (hops, path)} for pages within GRAPH_HOPS steps of root.
+
+    A page-to-term, term-to-page, or page-to-page step costs one hop. When bridge_related_terms is set, a route
+    may also use one related_term step between two terms at no hop cost, so a term can lead to pages of a
+    closely related term. A route uses at most one such step; longer chains drift away from the topic.
+    """
+    start = (root, False)
+    cost, paths, queue = {start: 0}, {start: [root]}, deque([start])
+    while queue:
+        state = queue.popleft()
+        node, bridged = state
+        for neighbor, relation in sorted(adjacency[node]):
+            is_bridge = relation == "related_term"
+            if is_bridge and (bridged or not bridge_related_terms):
+                continue
+            nxt, total = (neighbor, bridged or is_bridge), cost[state] + (0 if is_bridge else 1)
+            if total > GRAPH_HOPS or total >= cost.get(nxt, GRAPH_HOPS + 1):
+                continue
+            cost[nxt], paths[nxt] = total, paths[state] + [neighbor]
+            queue.appendleft(nxt) if is_bridge else queue.append(nxt)
+    best: dict[str, tuple[int, list[str]]] = {}
+    for state, total in cost.items():
+        if state[0] in pages and state[0] != root and (state[0] not in best or total < best[state[0]][0]):
+            best[state[0]] = (total, paths[state])
+    return best
+
+
+def _candidate_pages(seed_ids: list[str], adjacency: dict, pages: dict[str, dict], bridge_related_terms: bool) -> dict[str, tuple[int, list[str]]]:
+    """Merge the pages reachable from every seed, keeping the shortest route to each page."""
+    found: dict[str, tuple[int, list[str]]] = {}
+    for seed_id in seed_ids:
+        for page_id, route in _reachable_pages(seed_id, adjacency, pages, bridge_related_terms).items():
+            if page_id not in seed_ids and (page_id not in found or route[0] < found[page_id][0]):
+                found[page_id] = route
+    return found
+
+
+def _distances_to(db: sqlite3.Connection, vector: list[float], page_ids: list[str]) -> dict[str, float]:
+    """Return the cosine distance between the query vector and each stored page embedding (no API call)."""
+    marks = ",".join("?" * len(page_ids))
+    rows = db.execute(
+        f"SELECT page_id, vec_distance_cosine(embedding, ?) AS distance FROM chunks WHERE page_id IN ({marks})",
+        (sqlite_vec.serialize_float32(vector), *page_ids),
+    )
+    return {row["page_id"]: row["distance"] for row in rows}
+
+
+def search_graph_ranked(query: str, bridge_related_terms: bool = True, rerank: bool = True) -> dict:
+    """Graph retrieval whose expanded candidates are ordered by similarity to the query.
+
+    Same seeds as search_graph (the top GRAPH_START_K vector hits). Candidates come from adjacent pages and
+    shared terms within GRAPH_HOPS, plus pages of related terms when bridge_related_terms is set. With rerank,
+    candidates are sorted by cosine distance to the query, using the stored page embeddings, instead of by
+    graph position. The result has the same shape as search_graph.
+    """
+    if not isinstance(query, str) or not query.strip():
+        raise ValueError("The search query is empty.")
+    pages = {page["page_id"]: page for page in load_pages(RAG_SOURCE)}
+    graph = json.loads(RAG_GRAPH.read_text(encoding="utf-8"))
+    titles = {node["id"]: node["title"] for node in graph["nodes"]}
+    with open_index(RAG_DB) as db:
+        vector = embed_text(query.strip(), "RETRIEVAL_QUERY")
+        hits = [hit for hit in _nearest(db, vector) if hit["page_id"] in pages][:min(GRAPH_START_K, GRAPH_MAX_RESULTS)]
+        seed_ids = [hit["page_id"] for hit in hits]
+        found = _candidate_pages(seed_ids, _typed_adjacency(graph, pages), pages, bridge_related_terms)
+        distances = _distances_to(db, vector, list(found)) if found else {}
+    order = sorted(found, key=lambda p: (distances[p], p) if rerank else (found[p][0], len(found[p][1]), p))
+
+    def describe(page_id: str, hops: int, path: list[str], distance: float) -> dict:
+        return {**pages[page_id], "distance": distance, "hops": hops,
+                "path": [{"id": n, "title": titles[n]} for n in path]}
+
+    seeds = [describe(hit["page_id"], 0, [hit["page_id"]], hit["distance"]) for hit in hits]
+    expanded = [describe(p, found[p][0], found[p][1], distances[p]) for p in order]
+    return {"seeds": seeds, "expanded": expanded[:max(0, GRAPH_MAX_RESULTS - len(seeds))], "max_hops": GRAPH_HOPS}
+
+
+def _nearest(db: sqlite3.Connection, vector: list[float]) -> list[sqlite3.Row]:
+    """Return the RAG_TOP_K pages closest to the query vector, with their cosine distance."""
+    return db.execute(
+        "SELECT page_id, vec_distance_cosine(embedding, ?) AS distance FROM chunks ORDER BY distance, page_id LIMIT ?",
+        (sqlite_vec.serialize_float32(vector), RAG_TOP_K),
+    ).fetchall()
+
 
 def run_full_context(agent, question: str, model, instructions: str, prompt_template: str):
     """Pass all materials at once and answer without retrieval tools."""

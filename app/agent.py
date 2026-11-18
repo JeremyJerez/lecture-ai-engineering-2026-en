@@ -66,6 +66,8 @@ You are a learning support agent for the AI Engineering Pilot Course (AIE2026).
 - Guide learners with hints on how to think, rather than writing homework answers for them.
 """
 
+# Lecture 05 Advanced homework: same instructions as GRAPH_INSTRUCTIONS; only the tool name differs.
+GRAPH_RANKED_INSTRUCTIONS = GRAPH_INSTRUCTIONS.replace("search_graph", "search_graph_ranked")
 FULL_CONTEXT_INSTRUCTIONS = """\
 You are a learning support agent for an AI engineering course.
 - Answer the question using the provided materials, and cite the document name and PDF page number.
@@ -181,6 +183,7 @@ def main() -> None:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--mcp", action="store_true", help="Lecture 05: receive tools from MCP servers (app/mcp_servers.json)")
     modes.add_argument("--graph", action="store_true", help="Follow the graph from search results and read candidate pages to answer")
+    modes.add_argument("--graph-ranked", action="store_true", help="Advanced homework: graph retrieval with candidates ordered by similarity to the query")
     modes.add_argument("--tree", action="store_true", help="Follow the table of contents and read the necessary pages to answer")
     modes.add_argument("--full-context", action="store_true", help="Pass all materials in lectures.json at once, without searching")
     parser.add_argument("--list-tools", action="store_true", help="List tools visible to the model and exit (no API key needed)")
@@ -192,6 +195,8 @@ def main() -> None:
         mode = target.override(instructions=TREE_INSTRUCTIONS, tools=[tools.browse_tree])
     elif args.graph:
         mode = target.override(instructions=GRAPH_INSTRUCTIONS, tools=[tools.search_graph])
+    elif args.graph_ranked:
+        mode = target.override(instructions=GRAPH_RANKED_INSTRUCTIONS, tools=[tools.search_graph_ranked])
     with mode:
         if args.list_tools:
             if args.full_context:
