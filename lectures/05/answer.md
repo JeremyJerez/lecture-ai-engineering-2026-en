@@ -83,6 +83,8 @@ Files changed: `app/retrieval.py` (`search_graph_ranked` and four small helpers)
 | C1 graph + related terms (no rerank) | 10 | 2/3 | 2/2, 1/2 | 3/3, 2/2 | 2/4, 2/3 | 1/2, 2/2 |
 | C2 graph + related terms + rerank (my method) | 10 | 3/3 | 2/2, 1/2 | 3/3, 2/2 | **4/4**, 3/3 | 1/2, 2/2 |
 
+**Recheck on the English data.** After the course published the localized (English) search database, I merged upstream `main` and reran this retrieval-only test on it. All 19 evidence page IDs still exist and their titles are the English versions of the same slides. Every row of the table above came out the same on the English index. The 54 end-to-end runs and the exercise runs below were made on the Japanese data and were not repeated, so the English answers may differ in wording and citations.
+
 Only 20% to 70% of the 10 pages from the graph methods are evidence pages, against 60% to 100% of the 5 pages from vector search. Reranking alone (C0) recovers the missed page on Q1 and one of the two missed pages on Q4. The related-term step helps only together with reranking (C2 on Q4). Without reranking it pushes out evidence (C1 on Q4: supporting pages fall from 3/3 to 2/3).
 
 **2. End to end, required and supporting pages cited in the answer** (the citation "Lecture N / PDF p.N" in the answer text, parsed by a script; each cell lists the three runs):
