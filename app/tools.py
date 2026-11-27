@@ -5,8 +5,11 @@ Rewriting descriptions changes whether the model uses a tool and which arguments
 """
 
 import json
+import random
 from functools import cache
 from pathlib import Path
+
+from app.config import api_error_message
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 MAX_RESULTS = 3
@@ -77,3 +80,88 @@ def get_lecture_summary(lecture: int) -> str:
         available = sorted(p.stem for p in (DATA_DIR / "lectures").glob("*.md"))
         return f"Key points for Lecture {lecture:02d} are not available yet. Available sessions: {', '.join(available)}"
     return path.read_text(encoding="utf-8")
+
+
+def make_quiz(lecture: int) -> str:
+    """Create one review question and its reference answer from the glossary for a given lecture session (an integer starting at 1).
+
+    Use when asked for a review question or quiz from a specific session, such as "Give me one review question from Lecture 02".
+    """
+    candidates = [e for e in load_glossary() if e.get("lecture") == lecture]
+    if not candidates:
+        available = sorted({e["lecture"] for e in load_glossary() if "lecture" in e})
+        return (
+            f"No glossary terms were found for Lecture {lecture:02d}. "
+            f"Available sessions: {', '.join(f'{n:02d}' for n in available)}"
+        )
+    chosen = random.choice(candidates)
+    return json.dumps(
+        {
+            "question": f"What does {chosen['term']} mean?",
+            "answer": chosen["definition"],
+        },
+        ensure_ascii=False,
+    )
+
+
+def search_materials(query: str) -> str:
+    """Search the main materials for Lectures 01–03 and return relevant page text, titles, and page numbers.
+
+    Use query to specify what you want to look up.
+    """
+    from google.genai.errors import APIError
+    import sqlite3
+    from app.retrieval import search
+
+    try:
+        return json.dumps({"results": search(query)}, ensure_ascii=False)
+    except (ValueError, FileNotFoundError, sqlite3.Error) as e:
+        return json.dumps({"error": str(e), "results": []}, ensure_ascii=False)
+    except APIError as e:
+        return json.dumps({"error": api_error_message(e.code), "results": []}, ensure_ascii=False)
+
+
+def browse_tree(node_id: str | None = None) -> str:
+    """Return the table of contents and the first sentence of each page. Specify a page ID to get its full text.
+
+    Omit node_id on the first call. Then follow the table of contents using the returned IDs.
+    """
+    from app.retrieval import browse_tree as browse
+
+    try:
+        return json.dumps(browse(node_id), ensure_ascii=False)
+    except (ValueError, OSError) as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+
+def search_graph(query: str) -> str:
+    """Search the materials, then follow adjacent pages and shared terms to return related page text and citation metadata.
+
+    Use query to specify what you want to look up.
+    """
+    import sqlite3
+    from google.genai.errors import APIError
+    from app.retrieval import search_graph as search
+
+    try:
+        return json.dumps(search(query), ensure_ascii=False)
+    except (ValueError, OSError, sqlite3.Error) as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    except APIError as e:
+        return json.dumps({"error": api_error_message(e.code)}, ensure_ascii=False)
+
+
+def search_graph_ranked(query: str) -> str:
+    """Search the materials, then follow adjacent pages, shared terms, and related terms to find more pages.
+    Returns the starting pages and the related pages most similar to the query, with text and citation metadata.
+    Use query to specify what you want to look up.
+    """
+    import sqlite3
+    from google.genai.errors import APIError
+    from app.retrieval import search_graph_ranked as search
+    try:
+        return json.dumps(search(query), ensure_ascii=False)
+    except (ValueError, OSError, sqlite3.Error) as e:
+        return json.dumps({"error": str(e)}, ensure_ascii=False)
+    except APIError as e:
+        return json.dumps({"error": api_error_message(e.code)}, ensure_ascii=False)
